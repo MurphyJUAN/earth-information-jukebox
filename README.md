@@ -23,8 +23,8 @@ those distortions, while mapping the recovered value keeps the sound faithful to
 |---|---|---|
 | Colorbar type | continuous, 0–32 °C rainbow | diverging: orange = lights out · white = no change · purple = new lights |
 | Color → value | pixel **hue** matched to the extracted colorbar (`tools/extract_lut.py`). Hue is used instead of RGB because the flow lines are shaded darker and lighter, but they keep their hue | hue/saturation classification into *city light*, *new light*, *lights out* |
-| Scan | **north → south**, one latitude row at a time (temperature is organised by latitude) | west → east |
-| Colorbar as sound | an **octave** on the cello, D3 = 0 °C · D4 = 32 °C, sounding softly the whole time as a **pitch reference** | — |
+| Scan | **north → south**, one latitude row at a time, or **west → east inside a fixed latitude band** (tropics, 30–60°N, 30–60°S) | west → east |
+| Colorbar as sound | an **octave** played by two bassoon-like woodwinds, D2 = 0 °C · D3 = 32 °C, sounding softly the whole time as a **pitch reference** | — |
 | Data as sound | **one bowed cello tone**: pitch = mean temperature of the row, landing on **dominant-seventh chord tones** (D · F♯ · A · C · D), so it never forms a semitone or second against the reference. `M` = exact continuous pitch | new light = upper voice, lights out = lower voice, **a perfect fifth apart** |
 | Loudness | share of ocean in the row, so land and ice latitudes fall quiet | share of purple vs orange pixels |
 | Texture | a pizzicato octave double-stop marks the start of each sweep | yearly maps: each lit city under the scan line rings a soft bell, so more cities give denser twinkling |
