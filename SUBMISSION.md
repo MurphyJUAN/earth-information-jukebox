@@ -28,7 +28,7 @@ Lights 2012–2023, EIC version, SVS 5313. The jukebox plays the animation and s
   In the change map, an upper bright voice (new lights) and a lower dark voice (lights out) sound a perfect fifth apart,
   at loudness proportional to the share of purple vs orange pixels. The app detects the phase of the animation by itself.
 
-**How it works.** Plain HTML + JavaScript + the Web Audio API, with no build step. Video frames are downsampled onto a canvas.
+**How it works.** Plain HTML + JavaScript + the Web Audio API, with no build step. Sea temperature: north → south scan, one synthesized cello tone (32 harmonics, body resonances, vibrato) on dominant-seventh chord tones over an octave colorbar reference. Video frames are downsampled onto a canvas.
 Pixels are matched by **hue** against a lookup table extracted from the SVS colorbar image (Python + Pillow). Hue is
 used instead of RGB because it is robust to the shading of the flow lines. Per-column statistics then drive dyad oscillators,
 stereo panners, filters and a convolution reverb. ffmpeg transcodes the SVS movies into small, browser-friendly files.
@@ -59,4 +59,4 @@ decisions were reviewed and tested by the team. No SI-generated images, audio or
 synthesized live from NASA visualization pixels.
 
 ## Tools
-HTML/CSS/JavaScript, Web Audio API, Web Speech API, Python (Pillow, NumPy), ffmpeg, Playwright (demo recording).
+HTML/CSS/JavaScript, Web Audio API, Python (Pillow, NumPy), ffmpeg, Playwright (demo recording).

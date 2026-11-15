@@ -59,7 +59,7 @@
     </div>
 
     <div class="stage" id="stage" tabindex="0" role="application"
-         aria-label="Map explorer. Press Space to play or pause, arrow keys to move the listening probe, L for the audio legend, D for a spoken description.">
+         aria-label="Map explorer. Press Space to play or pause, arrow keys to move the listening probe, L for the audio legend, D for a text description.">
       <video id="video" muted loop playsinline preload="auto" aria-hidden="true"></video>
       <canvas class="overlay" id="overlay" aria-hidden="true"></canvas>
     </div>
@@ -69,9 +69,8 @@
       <button id="legendBtn" aria-keyshortcuts="L">🎚 Audio legend</button>
       <button id="describe" aria-keyshortcuts="D">🗣 Describe now</button>
       <button id="modeBtn" aria-pressed="true" aria-keyshortcuts="M">🎵 Musical scale</button>
-      <label>Sweep <input id="sweep" type="range" min="2" max="12" step="1" value="5" aria-label="Seconds per west-to-east sweep"> <span id="sweepVal">5 s</span></label>
+      <label>Sweep <input id="sweep" type="range" min="2" max="12" step="1" value="8" aria-label="Seconds per sweep"> <span id="sweepVal">8 s</span></label>
       <label>Volume <input id="vol" type="range" min="0" max="1" step="0.05" value="0.7" aria-label="Volume"></label>
-      <label><input id="speak" type="checkbox" checked> Voice</label>
     </div>
 
     <div id="status" role="status" aria-live="polite">Press <kbd>Space</kbd> (or ▶ Play) to start listening.</div>
@@ -113,10 +112,16 @@ const DATASETS = {
     grid: [180, 90],
     desc: `<p>Ocean surface currents from the ECCO2 model (March 2007 – March 2008), colored by temperature from
       0 °C (blue) to 32 °C (red). Grey areas are land.</p>
-      <p><b>Mapping.</b> A scan line sweeps west → east. For each longitude, every ocean pixel's color is matched to the
-      colorbar to recover its temperature. <b>Pitch = temperature</b> (low = cold, high = warm), played as a root + perfect
-      fifth so it stays consonant. <b>Left/right = longitude.</b> <b>Loudness = how much ocean</b> is in that column — so continents
-      are heard as silence. A soft drone tracks the global mean temperature as the year goes by.</p>`,
+      <p><b>The colorbar is an octave.</b> Its two ends are two cello notes an octave apart — D3 = 0 °C, D4 = 32 °C — which
+      sound softly in the background the whole time as a <b>pitch reference</b>, just as the colorbar stays on screen.</p>
+      <p><b>The data is one tone.</b> Ocean temperature is organised by latitude, so the scan line sweeps <b>north → south</b>.
+      For each latitude row every ocean pixel's color is matched to the colorbar to recover its temperature, and the row's mean is
+      played as a single bowed cello tone between the two reference notes. In <i>musical</i> mode it lands on the tones of a
+      dominant-seventh chord (D · F♯ · A · C · D), so it never forms a semitone or second against the reference: one sweep
+      sounds like an arpeggio rising toward the warm equator and falling again. Press <kbd>M</kbd> for exact, continuous pitch.
+      <b>Loudness = how much ocean</b> is in the row; a pizzicato double-stop marks the start of each sweep.</p>
+      <p><b>Why a cello?</b> Currents are continuous, slow and directional — a bowed string's legato follows them without breaks,
+      and its rich overtones keep a single line warm and pleasant.</p>`,
     legend: { lo: "0 °C", mid: "16 °C", hi: "32 °C" },
   },
   lights: {
@@ -225,6 +230,12 @@ function columnStats(col) {
   return { gain: gain / H, loss: loss / H, lit: lit / H, litN: lit, bright: lit ? b / lit : 0 };
 }
 
+function rowStats(row) {
+  const { W } = frame; let sum = 0, n = 0;
+  for (let x = 0; x < W; x++) { const t = frame.t[row * W + x]; if (t === t) { sum += t; n++; } }
+  return { mean: n ? sum / n : NaN, cover: n / W };
+}
+
 function globalStats() {
   const { W, H } = frame; const n = W * H;
   if (current === "sst") {
@@ -277,6 +288,61 @@ class Dyad {  // root + perfect fifth, filtered, panned
   }
 }
 
+// ---- cello: harmonic additive wave + body resonances + vibrato
+let CELLO_WAVE = null, celloIn = null;
+const SST_LO = 146.83;                         // D3 = 0 °C; the colorbar spans one octave → D4 = 32 °C
+const CHORD = [0, 4, 7, 10, 12];               // dominant seventh on D: D F# A C D' — no semitone / second against the octave
+function sstFreq(t) {
+  let semis = 12 * Math.max(0, Math.min(1, t));
+  if (musical) semis = CHORD.reduce((a, b) => Math.abs(b - semis) < Math.abs(a - semis) ? b : a);
+  return SST_LO * Math.pow(2, semis / 12);
+}
+function makeCelloWave(ctx) {
+  const N = 32, re = new Float32Array(N + 1), im = new Float32Array(N + 1);
+  for (let n = 1; n <= N; n++) {
+    let a = 1 / n;                             // bowed string ≈ sawtooth spectrum (Helmholtz motion)
+    a /= 1 + Math.pow(n / 11, 2);              // soften the top harmonics
+    if (n === 1) a *= 0.75; if (n === 2 || n === 3) a *= 1.2;
+    im[n] = a;
+  }
+  return ctx.createPeriodicWave(re, im);
+}
+function makeCelloBody(ctx, out) {             // wooden body resonances
+  const hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 65;
+  const peaks = [[220, 1.3, 5], [580, 1.6, 3], [2700, 1.0, 4]].map(([f, q, g]) => {
+    const b = ctx.createBiquadFilter(); b.type = "peaking"; b.frequency.value = f; b.Q.value = q; b.gain.value = g; return b; });
+  const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 5500;
+  let node = hp; for (const b of peaks) { node.connect(b); node = b; } node.connect(lp).connect(out);
+  return hp;
+}
+class Cello {   // one bowed tone: two slightly detuned oscillators, shared vibrato
+  constructor(ctx, out, vib = 9) {
+    this.ctx = ctx;
+    this.o1 = ctx.createOscillator(); this.o2 = ctx.createOscillator();
+    this.o1.setPeriodicWave(CELLO_WAVE); this.o2.setPeriodicWave(CELLO_WAVE); this.o2.detune.value = 4;
+    const lfo = ctx.createOscillator(); lfo.frequency.value = 4.8 + Math.random(); const depth = ctx.createGain(); depth.gain.value = vib;
+    lfo.connect(depth); depth.connect(this.o1.detune); depth.connect(this.o2.detune);
+    const g2 = ctx.createGain(); g2.gain.value = 0.55;
+    this.amp = ctx.createGain(); this.amp.gain.value = 0;
+    this.o1.connect(this.amp); this.o2.connect(g2).connect(this.amp); this.amp.connect(out);
+    this.o1.start(); this.o2.start(); lfo.start();
+  }
+  set(freq, gain, _pan = 0, glide = 0.06) {
+    const t = this.ctx.currentTime;
+    if (freq > 0) { this.o1.frequency.setTargetAtTime(freq, t, glide); this.o2.frequency.setTargetAtTime(freq, t, glide); }
+    this.amp.gain.setTargetAtTime(gain, t, 0.08);
+  }
+}
+function pizz(freq, vol) {
+  const t = ac.currentTime, o = ac.createOscillator(), f = ac.createBiquadFilter(), g = ac.createGain();
+  o.setPeriodicWave(CELLO_WAVE); o.frequency.value = freq;
+  f.type = "lowpass"; f.frequency.setValueAtTime(3500, t); f.frequency.exponentialRampToValueAtTime(350, t + 0.7);
+  g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.004); g.gain.exponentialRampToValueAtTime(0.0001, t + 1.6);
+  o.connect(f).connect(g).connect(celloIn); o.start(t); o.stop(t + 1.7);
+}
+const colorbarPizz = (vol = 0.3) => { pizz(SST_LO, vol); pizz(SST_LO * 2, vol); };
+const reference = (gain) => { voices.ref1.set(SST_LO, gain); voices.ref2.set(SST_LO * 2, gain * 0.8); };
+
 function initAudio() {
   if (ac) return;
   ac = new (window.AudioContext || window.webkitAudioContext)();
@@ -292,6 +358,11 @@ function initAudio() {
   voices.gain  = new Dyad(ac, { type: "triangle", fifth: 0.0, cutoff: 3200, out: bus });   // new light (upper)
   voices.loss  = new Dyad(ac, { type: "sawtooth", fifth: 0.0, cutoff: 900, out: bus });    // lights out (lower)
   voices.bus = bus;
+  CELLO_WAVE = makeCelloWave(ac); celloIn = makeCelloBody(ac, bus);
+  voices.cello = new Cello(ac, celloIn);       // the data: one tone
+  voices.cello2 = new Cello(ac, celloIn);      // probe tone
+  voices.ref1 = new Cello(ac, celloIn, 4);     // colorbar reference: low end (0 °C)
+  voices.ref2 = new Cello(ac, celloIn, 4);     // colorbar reference: high end (32 °C), one octave up
 }
 
 function bell(freq, pan, vol) {
@@ -301,19 +372,11 @@ function bell(freq, pan, vol) {
   o.connect(g).connect(p).connect(voices.bus); o.start(t); o.stop(t + 1);
 }
 
-function silenceAll() { if (!ac) return; for (const k of ["scan", "drone", "probe", "gain", "loss"]) voices[k].set(0, 0); }
+function silenceAll() { if (!ac) return; for (const k of ["scan", "drone", "probe", "gain", "loss", "cello", "cello2", "ref1", "ref2"]) voices[k].set(0, 0); }
 
 // ---------------------------------------------------------------- speech / status
-let lastSpoken = 0;
-function say(text, { speak = true, force = false } = {}) {
-  statusEl.textContent = text;
-  if (!speak || !$("speak").checked || !("speechSynthesis" in window)) return;
-  const now = performance.now();
-  if (!force && now - lastSpoken < 900) return;
-  lastSpoken = now;
-  speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text); u.rate = 1.05; speechSynthesis.speak(u);
-}
+// Status text only (no speech synthesis). The region is aria-live, so screen-reader users still get it.
+function say(text) { statusEl.textContent = text; }
 
 const fmtT = (t) => (t * 32).toFixed(1) + " °C";
 function lonOf(nx) { if (current === "lights") nx = (nx * 2) % 1; return -180 + 360 * nx; }
@@ -364,28 +427,32 @@ async function audioLegend() {
   legendPlaying = true; const wasPlaying = playing; if (playing) togglePlay();
   silenceAll();
   if (current === "sst") {
-    say("Audio legend. Low pitch is 0 degrees, cold, blue. Rising to high pitch, 32 degrees, warm, red.", { force: true });
-    await wait(4200);
-    const dur = 4000, start = performance.now();
+    say("Audio legend: the colorbar is an octave on the cello — low D = 0 °C, high D = 32 °C.");
+    colorbarPizz(0.4); await wait(900);
+    reference(0.3); drawLegend(0); await wait(2200);            // bowed double-stop = the colorbar
+    reference(0.07); await wait(300);
+    say("The data is one tone moving between them: 0, 8, 16, 24, 32 °C land on D, F♯, A, C, D.");
+    const dur = 5000, start = performance.now();
     await new Promise(res => {
       (function step() {
         const k = Math.min(1, (performance.now() - start) / dur);
-        voices.scan.set(pitch(k), 0.35, k * 2 - 1); drawLegend(k);
+        voices.cello.set(sstFreq(k), 0.35); drawLegend(k);
         if (k < 1) requestAnimationFrame(step); else res();
       })();
     });
+    await wait(600); voices.cello.set(0, 0); reference(0.25); await wait(1500);
   } else {
     say("Audio legend. This lower, darker voice means lights went out.", { force: true });
-    await wait(2600); voices.loss.set(pitch(0.25), 0.25, -0.5); drawLegend(0.05); await wait(2200); voices.loss.set(0, 0);
+    await wait(300); voices.loss.set(pitch(0.25), 0.25, -0.5); drawLegend(0.05); await wait(2200); voices.loss.set(0, 0);
     say("This upper, brighter voice, a perfect fifth higher, means new lights.", { force: true });
-    await wait(2800); voices.gain.set(pitch(0.25) * 1.5, 0.3, 0.5); drawLegend(0.95); await wait(2200);
+    await wait(400); voices.gain.set(pitch(0.25) * 1.5, 0.3, 0.5); drawLegend(0.95); await wait(2200);
     say("Together, they show growth and loss at the same longitude. Twinkling bells mark city lights in the yearly maps.", { force: true });
     voices.loss.set(pitch(0.25), 0.22, -0.5); await wait(2500); voices.gain.set(0, 0); voices.loss.set(0, 0);
     for (let i = 0; i < 8; i++) { bell(pitch(0.6 + Math.random() * 0.4), Math.random() * 2 - 1, 0.18); await wait(160); }
     await wait(1200);
   }
   silenceAll(); drawLegend(); legendPlaying = false;
-  say("Legend done. Press Space to play.", { speak: false });
+  say("Legend done. Press Space to play.");
   if (wasPlaying) togglePlay();
 }
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
@@ -406,11 +473,13 @@ function loop(ts) {
   const g = globalStats();
 
   if (current === "sst") {
-    const s = columnStats(col);
-    voices.scan.set(s.mean === s.mean ? pitch(s.mean) : 0, s.mean === s.mean ? 0.08 + 0.32 * Math.sqrt(s.cover) : 0, pan);
-    voices.drone.set(g.mean === g.mean ? pitch(g.mean, 33, 24) : 0, 0.12, 0, 0.8);
-    meters([["Under scan line", s.mean === s.mean ? fmtT(s.mean) : "land", s.mean], ["Ocean in column", Math.round(s.cover * 100) + "%", s.cover], ["Global mean", fmtT(g.mean), g.mean]]);
-    if (sweepIdx !== lastSweepIdx && lastSweepIdx >= 0) say(`${sstDate()}. Global mean ${fmtT(g.mean)}.`, { speak: false });
+    const ny = nx, row = Math.min(frame.H - 1, Math.floor(ny * frame.H));   // sweep position = latitude row (north → south)
+    if (sweepIdx !== lastSweepIdx) colorbarPizz(0.22);                     // marks the start of each sweep
+    reference(0.07);                                                        // the colorbar, always sounding softly
+    const s = rowStats(row), ok = s.mean === s.mean;
+    voices.cello.set(ok ? sstFreq(s.mean) : 0, ok ? 0.08 + 0.36 * Math.sqrt(s.cover) : 0);
+    meters([["Latitude", fmtLat(latOf(ny)), 1 - ny], ["Under scan line", ok ? fmtT(s.mean) : "land / ice", s.mean], ["Ocean in row", Math.round(s.cover * 100) + "%", s.cover]]);
+    if (sweepIdx !== lastSweepIdx && lastSweepIdx >= 0) say(`${sstDate()}. Global mean ${fmtT(g.mean)}.`);
   } else {
     const s = columnStats(col);
     if (frame.phase === "change") {
@@ -439,9 +508,9 @@ function loop(ts) {
   // probe
   if (probe) {
     const px = Math.min(frame.W - 1, Math.floor(probe.x * frame.W)), py = Math.min(frame.H - 1, Math.floor(probe.y * frame.H));
-    if (current === "sst") { const t = frame.t[py * frame.W + px]; voices.probe.set(t === t ? pitch(t) : 0, t === t ? 0.3 : 0, probe.x * 2 - 1); }
+    if (current === "sst") { const t = frame.t[py * frame.W + px]; voices.cello2.set(t === t ? sstFreq(t) : 0, t === t ? 0.3 : 0); }
     else { const c = frame.cls[py * frame.W + px]; voices.probe.set(c === 2 ? pitch(0.25) * 1.5 : c === 3 ? pitch(0.25) : c === 1 ? pitch(0.8) : 0, c ? 0.3 : 0, probe.x * 2 - 1); }
-  } else voices.probe.set(0, 0);
+  } else { voices.probe.set(0, 0); voices.cello2.set(0, 0); }
 }
 
 function meters(rows) {
@@ -456,11 +525,18 @@ function drawOverlay() {
   if (overlay.width !== w || overlay.height !== h) { overlay.width = w; overlay.height = h; }
   const x = overlay.getContext("2d"); x.clearRect(0, 0, w, h);
   if (playing && ac) {
-    const nx = ((ac.currentTime - sweepStart) / sweepSec()) % 1;
-    const grd = x.createLinearGradient(nx * w - 30 * dpr, 0, nx * w, 0);
-    grd.addColorStop(0, "rgba(255,181,71,0)"); grd.addColorStop(1, "rgba(255,181,71,0.35)");
-    x.fillStyle = grd; x.fillRect(nx * w - 30 * dpr, 0, 30 * dpr, h);
-    x.fillStyle = "rgba(255,220,150,0.95)"; x.fillRect(nx * w - 1 * dpr, 0, 2 * dpr, h);
+    const k = ((ac.currentTime - sweepStart) / sweepSec()) % 1;
+    if (current === "sst") {            // horizontal line moving north → south
+      const y = k * h, grd = x.createLinearGradient(0, y - 30 * dpr, 0, y);
+      grd.addColorStop(0, "rgba(255,181,71,0)"); grd.addColorStop(1, "rgba(255,181,71,0.35)");
+      x.fillStyle = grd; x.fillRect(0, y - 30 * dpr, w, 30 * dpr);
+      x.fillStyle = "rgba(255,220,150,0.95)"; x.fillRect(0, y - 1 * dpr, w, 2 * dpr);
+    } else {
+      const nx = k, grd = x.createLinearGradient(nx * w - 30 * dpr, 0, nx * w, 0);
+      grd.addColorStop(0, "rgba(255,181,71,0)"); grd.addColorStop(1, "rgba(255,181,71,0.35)");
+      x.fillStyle = grd; x.fillRect(nx * w - 30 * dpr, 0, 30 * dpr, h);
+      x.fillStyle = "rgba(255,220,150,0.95)"; x.fillRect(nx * w - 1 * dpr, 0, 2 * dpr, h);
+    }
   }
   if (probe) {
     const cx = probe.x * w, cy = probe.y * h;
@@ -509,7 +585,7 @@ document.querySelectorAll("[data-ds]").forEach(b => b.addEventListener("click", 
 $("play").addEventListener("click", togglePlay);
 $("legendBtn").addEventListener("click", audioLegend);
 $("describe").addEventListener("click", describe);
-$("modeBtn").addEventListener("click", () => { musical = !musical; $("modeBtn").setAttribute("aria-pressed", musical); $("modeBtn").textContent = musical ? "🎵 Musical scale" : "📈 Raw pitch"; say(musical ? "Musical scale: values snap to a pentatonic scale." : "Raw pitch: continuous, exact mapping."); });
+$("modeBtn").addEventListener("click", () => { musical = !musical; $("modeBtn").setAttribute("aria-pressed", musical); $("modeBtn").textContent = musical ? "🎵 Musical scale" : "📈 Raw pitch"; say(musical ? "Musical: sea temperature snaps to dominant-seventh chord tones (night lights: pentatonic) — no harsh intervals." : "Exact pitch: continuous mapping, may clash with the reference."); });
 $("sweep").addEventListener("input", (e) => { $("sweepVal").textContent = e.target.value + " s"; if (ac) sweepStart = ac.currentTime; });
 $("vol").addEventListener("input", (e) => { if (master) master.gain.value = +e.target.value; });
 
