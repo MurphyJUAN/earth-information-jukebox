@@ -136,10 +136,11 @@ const DATASETS = {
     desc: `<p>VIIRS annual night-light composites (2012 → 2023), then the change between 2012 and 2023:
       <span style="color:#b48cff">purple = new lights</span>, <span style="color:#ffa64d">orange = lights out</span>.
       The EIC wall version shows the globe twice side by side, with zoom-ins on Western Europe, the Eastern Mediterranean, Ukraine and India.</p>
-      <p><b>Mapping.</b> During the yearly maps, every lit pixel under the scan line can trigger a soft bell —
-      <b>more cities = denser twinkling</b>, brighter = higher. During the change map two voices answer each other, a
-      <b>perfect fifth apart</b>: the upper, bright voice is <b>new light</b>, the lower, darker voice is <b>light lost</b>.
-      Their loudness is the share of purple vs orange pixels, so growth and loss can be heard side by side.</p>`,
+      <p><b>The colorbar is an octave</b>, held quietly in the background by two woodwinds: low D (D2) = lights out, high D (D3) = new lights.</p>
+      <p><b>The data is a harp.</b> As the scan line moves west → east (stereo = longitude), the change map plucks the
+      <b>low D wherever lights went out</b> and the <b>high D wherever new lights appeared</b>, louder where there is more of it.
+      During the yearly maps, each cluster of city lights plucks a chord tone (D · F♯ · A · C · D) — brighter cities ring higher,
+      busier longitudes ring more often.</p>`,
     legend: { lo: "lights out", mid: "no change", hi: "new lights" },
   },
 };
@@ -411,6 +412,20 @@ function bell(freq, pan, vol) {
   o.connect(g).connect(p).connect(voices.bus); o.start(t); o.stop(t + 1);
 }
 
+// ---- harp: plucked string, fast attack, long decay, darkening filter
+let HARP_WAVE = null;
+function harp(freq, pan, vol) {
+  if (!HARP_WAVE) { const a = [0, 1, 0.45, 0.22, 0.12, 0.07, 0.04, 0.02]; HARP_WAVE = ac.createPeriodicWave(new Float32Array(a.length), new Float32Array(a)); }
+  const t = ac.currentTime, o = ac.createOscillator(), f = ac.createBiquadFilter(), g = ac.createGain(), p = ac.createStereoPanner();
+  o.setPeriodicWave(HARP_WAVE); o.frequency.value = freq; p.pan.value = pan;
+  f.type = "lowpass"; f.frequency.setValueAtTime(2600, t); f.frequency.exponentialRampToValueAtTime(500, t + 1.2);
+  g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.003); g.gain.exponentialRampToValueAtTime(0.0001, t + 2.2);
+  o.connect(f).connect(g).connect(p).connect(voices.bus); o.start(t); o.stop(t + 2.3);
+}
+const LIGHTS_LO = 73.42, LIGHTS_HI = 146.83;   // colorbar octave: D2 = lights out · D3 = new lights
+const chordFreq = (t) => sstFreq(t);           // city lights (yearly maps): brightness → chord tones inside the octave
+let lastBin = -1;
+
 function silenceAll() { if (!ac) return; for (const k of ["scan", "drone", "probe", "gain", "loss", "cello", "cello2", "ref1", "ref2"]) voices[k].set(0, 0); }
 
 // ---------------------------------------------------------------- speech / status
@@ -480,14 +495,15 @@ async function audioLegend() {
     });
     await wait(600); voices.cello.set(0, 0); reference(0.2); await wait(1600);
   } else {
-    say("Audio legend. This lower, darker voice means lights went out.", { force: true });
-    await wait(300); voices.loss.set(98.0, 0.25, -0.5); drawLegend(0.05); await wait(2200); voices.loss.set(0, 0);
-    say("This upper, brighter voice, a perfect fifth higher, means new lights.", { force: true });
-    await wait(400); voices.gain.set(146.83, 0.3, 0.5); drawLegend(0.95); await wait(2200);
-    say("Together, they show growth and loss at the same longitude. Twinkling bells mark city lights in the yearly maps.", { force: true });
-    voices.loss.set(98.0, 0.22, -0.5); await wait(2500); voices.gain.set(0, 0); voices.loss.set(0, 0);
-    for (let i = 0; i < 8; i++) { bell(pitch(0.6 + Math.random() * 0.4), Math.random() * 2 - 1, 0.18); await wait(160); }
-    await wait(1200);
+    say("Audio legend: the colorbar is an octave in the background — low D = lights out, high D = new lights.");
+    reference(0.16); drawLegend(0.5); await wait(2200); reference(0.035);
+    say("A harp plucks the low D where lights went out…");
+    drawLegend(0.05); for (let i = 0; i < 3; i++) { harp(LIGHTS_LO, -0.5, 0.25); await wait(450); }
+    say("…and the high D where new lights appeared.");
+    drawLegend(0.95); for (let i = 0; i < 3; i++) { harp(LIGHTS_HI, 0.5, 0.25); await wait(450); }
+    say("In the yearly maps, every cluster of city lights plucks a chord tone — brighter is higher.");
+    for (const k of [0, 0.33, 0.58, 0.83, 1]) { harp(chordFreq(k), k * 2 - 1, 0.2); await wait(260); }
+    await wait(1500);
   }
   silenceAll(); drawLegend(); legendPlaying = false;
   say("Legend done. Press Space to play.");
@@ -525,19 +541,20 @@ function loop(ts) {
     if (sweepIdx !== lastSweepIdx && lastSweepIdx >= 0) say(`${sstDate()}. Global mean ${fmtT(g.mean)}.`);
   } else {
     const s = columnStats(col);
-    if (frame.phase === "change") {
-      const base = 98.0;
-      voices.gain.set(146.83, Math.min(0.5, Math.sqrt(s.gain) * 1.6), pan);
-      voices.loss.set(base, Math.min(0.45, Math.sqrt(s.loss) * 1.6), pan);
-      voices.drone.set(0, 0);
-    } else {
-      voices.gain.set(0, 0); voices.loss.set(0, 0);
-      voices.drone.set(0, 0);
-      if (col !== lastCol) {
-        // bells: probability grows with number of lit cells in this column
-        const n = Math.min(3, Math.round(s.litN / 2 + (Math.random() < (s.litN % 2) / 2 ? 1 : 0)));
-        for (let i = 0; i < n; i++) bell(pitch(0.45 + 0.55 * Math.min(1, s.bright * 1.4) + Math.random() * 0.1), pan, 0.06 + 0.06 * Math.min(1, s.bright));
+    reference(0.035);                                            // the colorbar octave, quietly in the background
+    voices.gain.set(0, 0); voices.loss.set(0, 0); voices.drone.set(0, 0);
+    const bin = Math.floor(col / 8);
+    if (bin !== lastBin) {                                       // aggregate 8 columns → one harp gesture
+      let gn = 0, ln = 0, lit = 0, br = 0;
+      for (let c = bin * 8; c < Math.min(frame.W, bin * 8 + 8); c++) { const q = columnStats(c); gn += q.gain; ln += q.loss; lit += q.litN; br += q.bright * q.litN; }
+      if (frame.phase === "change") {
+        if (gn > 0) harp(LIGHTS_HI, pan, Math.min(0.3, 0.08 + Math.sqrt(gn) * 0.25));   // new lights: high D
+        if (ln > 0) harp(LIGHTS_LO, pan, Math.min(0.3, 0.08 + Math.sqrt(ln) * 0.25));   // lights out: low D
+      } else if (lit > 0) {
+        const b = br / lit, n = lit > 12 ? 2 : 1;
+        for (let i = 0; i < n; i++) harp(chordFreq(Math.min(1, b * 1.3) - i * 0.25), pan, Math.min(0.22, 0.06 + lit * 0.01));
       }
+      lastBin = bin;
     }
     meters([["Phase", frame.phase === "change" ? "change 2012→2023" : "yearly lights", frame.phase === "change" ? 1 : 0.3],
             ["New light (column)", (s.gain * 100).toFixed(1) + "%", Math.min(1, s.gain * 8)],
@@ -552,7 +569,7 @@ function loop(ts) {
   if (probe) {
     const px = Math.min(frame.W - 1, Math.floor(probe.x * frame.W)), py = Math.min(frame.H - 1, Math.floor(probe.y * frame.H));
     if (current === "sst") { const t = frame.t[py * frame.W + px]; voices.cello2.set(t === t ? sstFreq(t) : 0, t === t ? 0.2 : 0); }
-    else { const c = frame.cls[py * frame.W + px]; voices.probe.set(c === 2 ? 146.83 : c === 3 ? 98.0 : c === 1 ? pitch(0.8) : 0, c ? 0.3 : 0, probe.x * 2 - 1); }
+    else { const c = frame.cls[py * frame.W + px]; voices.probe.set(c === 2 ? LIGHTS_HI : c === 3 ? LIGHTS_LO : c === 1 ? chordFreq(0.58) : 0, c ? 0.3 : 0, probe.x * 2 - 1); }
   } else { voices.probe.set(0, 0); voices.cello2.set(0, 0); }
 }
 
@@ -606,7 +623,7 @@ function selectDataset(id) {
   document.querySelectorAll("[data-ds]").forEach(b => { const on = b.dataset.ds === id; b.setAttribute("aria-pressed", on); b.setAttribute("aria-checked", on); });
   $("dsDesc").innerHTML = DATASETS[id].desc;
   video.src = DATASETS[id].video; video.load();
-  frame.t = null; probe = null; silenceAll(); drawLegend(); $("meters").innerHTML = ""; $("scanWrap").hidden = id !== "sst";
+  frame.t = null; probe = null; silenceAll(); drawLegend(); $("meters").innerHTML = ""; $("scanWrap").hidden = id !== "sst"; lastBin = -1;
   if (playing) video.play().catch(() => {});
   say(`${DATASETS[id].title} selected. Press L for the audio legend, Space to play.`);
 }
