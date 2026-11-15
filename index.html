@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Earth Information Jukebox — hear NASA EIC visualizations</title>
+<style>
+  :root { --bg:#0b0f17; --panel:#141b27; --ink:#e8edf5; --muted:#9aa7bb; --accent:#ffb547; --focus:#7cc4ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:18px 24px 6px; }
+  h1 { margin:0; font-size:1.6rem; letter-spacing:.02em; }
+  h1 span { color:var(--accent); }
+  .tag { color:var(--muted); margin:4px 0 0; }
+  main { display:grid; grid-template-columns: minmax(0,1fr) 340px; gap:18px; padding:12px 24px 24px; }
+  @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+  .stage { position:relative; background:#000; border-radius:10px; overflow:hidden; outline:none; }
+  .stage:focus-visible { box-shadow:0 0 0 3px var(--focus); }
+  .stage video { display:block; width:100%; height:auto; }
+  .stage canvas.overlay { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+  .panel { background:var(--panel); border-radius:10px; padding:14px 16px; }
+  .panel h2 { font-size:1rem; margin:0 0 8px; color:var(--accent); }
+  .datasets { display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px; }
+  button, select { font:inherit; color:var(--ink); background:#22304a; border:1px solid #33476b; border-radius:8px; padding:8px 12px; cursor:pointer; }
+  button:hover { background:#2b3d5e; }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline:3px solid var(--focus); outline-offset:2px; }
+  button[aria-pressed="true"] { background:var(--accent); color:#1a1200; border-color:var(--accent); font-weight:600; }
+  .controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:12px 0; }
+  label { color:var(--muted); font-size:.9rem; }
+  input[type=range] { vertical-align:middle; }
+  .legend { margin:10px 0 0; }
+  .legend canvas { width:100%; height:18px; border-radius:4px; display:block; }
+  .legend .ends { display:flex; justify-content:space-between; color:var(--muted); font-size:.85rem; }
+  #status { min-height:3em; font-size:1.05rem; background:#0f1520; border-left:4px solid var(--accent); padding:8px 12px; border-radius:6px; margin-top:12px; }
+  .meters { display:grid; grid-template-columns:auto 1fr auto; gap:4px 8px; font-size:.9rem; color:var(--muted); align-items:center; }
+  .bar { height:8px; background:#22304a; border-radius:4px; overflow:hidden; }
+  .bar > i { display:block; height:100%; width:0; background:var(--accent); transition:width .1s; }
+  kbd { background:#22304a; border:1px solid #33476b; border-radius:4px; padding:0 5px; font-size:.85em; }
+  ul.keys { padding-left:18px; margin:6px 0; color:var(--muted); font-size:.9rem; }
+  .desc { color:var(--muted); font-size:.92rem; }
+  footer { padding:0 24px 24px; color:var(--muted); font-size:.85rem; }
+  a { color:var(--focus); }
+  .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Earth Information <span>Jukebox</span></h1>
+  <p class="tag">Listen to NASA Earth Information Center visualizations. Each pixel's color is read back through the
+    visualization's own colorbar into a physical value — then that value is played as pitch.</p>
+</header>
+
+<main>
+  <section aria-labelledby="stage-h">
+    <h2 id="stage-h" class="sr-only">Visualization and sound</h2>
+    <div class="datasets" role="radiogroup" aria-label="Choose a visualization">
+      <button role="radio" data-ds="sst" aria-pressed="true" aria-checked="true">🌊 Sea Surface Temperature &amp; Currents</button>
+      <button role="radio" data-ds="lights" aria-pressed="false" aria-checked="false">🌃 Night Lights 2012–2023</button>
+    </div>
+
+    <div class="stage" id="stage" tabindex="0" role="application"
+         aria-label="Map explorer. Press Space to play or pause, arrow keys to move the listening probe, L for the audio legend, D for a spoken description.">
+      <video id="video" muted loop playsinline preload="auto" aria-hidden="true"></video>
+      <canvas class="overlay" id="overlay" aria-hidden="true"></canvas>
+    </div>
+
+    <div class="controls">
+      <button id="play" aria-keyshortcuts="Space">▶ Play</button>
+      <button id="legendBtn" aria-keyshortcuts="L">🎚 Audio legend</button>
+      <button id="describe" aria-keyshortcuts="D">🗣 Describe now</button>
+      <button id="modeBtn" aria-pressed="true" aria-keyshortcuts="M">🎵 Musical scale</button>
+      <label>Sweep <input id="sweep" type="range" min="2" max="12" step="1" value="5" aria-label="Seconds per west-to-east sweep"> <span id="sweepVal">5 s</span></label>
+      <label>Volume <input id="vol" type="range" min="0" max="1" step="0.05" value="0.7" aria-label="Volume"></label>
+      <label><input id="speak" type="checkbox" checked> Voice</label>
+    </div>
+
+    <div id="status" role="status" aria-live="polite">Press <kbd>Space</kbd> (or ▶ Play) to start listening.</div>
+  </section>
+
+  <aside class="panel" aria-labelledby="about-h">
+    <h2 id="about-h">What you are hearing</h2>
+    <div id="dsDesc" class="desc"></div>
+    <div class="legend" aria-hidden="true">
+      <canvas id="legendCanvas" width="300" height="18"></canvas>
+      <div class="ends"><span id="legLo"></span><span id="legMid"></span><span id="legHi"></span></div>
+    </div>
+    <h2 style="margin-top:14px">Live readout</h2>
+    <div class="meters" id="meters" aria-hidden="true"></div>
+    <h2 style="margin-top:14px">Keyboard</h2>
+    <ul class="keys">
+      <li><kbd>Space</kbd> play / pause</li>
+      <li><kbd>←↑↓→</kbd> move the listening probe (<kbd>Shift</kbd> = faster), <kbd>Esc</kbd> release it</li>
+      <li><kbd>L</kbd> audio legend · <kbd>D</kbd> describe · <kbd>M</kbd> musical / raw pitch</li>
+      <li><kbd>1</kbd> / <kbd>2</kbd> switch visualization</li>
+    </ul>
+  </aside>
+</main>
+
+<footer>
+  Visualizations: NASA Scientific Visualization Studio —
+  <a href="https://svs.gsfc.nasa.gov/3912/">Global Sea Surface Currents and Temperature (SVS 3912)</a>,
+  <a href="https://svs.gsfc.nasa.gov/5313/">Change in Night Lights 2012–2023, EIC version (SVS 5313)</a>.
+  Sonification runs live in your browser (Web Audio API); nothing is pre-recorded.
+</footer>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------- datasets
+const DATASETS = {
+  sst: {
+    title: "Sea Surface Temperature & Currents",
+    video: "media/web/sst.mp4",
+    grid: [180, 90],
+    desc: `<p>Ocean surface currents from the ECCO2 model (March 2007 – March 2008), colored by temperature from
+      0 °C (blue) to 32 °C (red). Grey areas are land.</p>
+      <p><b>Mapping.</b> A scan line sweeps west → east. For each longitude, every ocean pixel's color is matched to the
+      colorbar to recover its temperature. <b>Pitch = temperature</b> (low = cold, high = warm), played as a root + perfect
+      fifth so it stays consonant. <b>Left/right = longitude.</b> <b>Loudness = how much ocean</b> is in that column — so continents
+      are heard as silence. A soft drone tracks the global mean temperature as the year goes by.</p>`,
+    legend: { lo: "0 °C", mid: "16 °C", hi: "32 °C" },
+  },
+  lights: {
+    title: "Night Lights 2012–2023",
+    video: "media/web/nightlights.mp4",
+    grid: [480, 135],
+    desc: `<p>VIIRS annual night-light composites (2012 → 2023), then the change between 2012 and 2023:
+      <span style="color:#b48cff">purple = new lights</span>, <span style="color:#ffa64d">orange = lights out</span>.
+      The EIC wall version shows the globe twice side by side, with zoom-ins on Western Europe, the Eastern Mediterranean, Ukraine and India.</p>
+      <p><b>Mapping.</b> During the yearly maps, every lit pixel under the scan line can trigger a soft bell —
+      <b>more cities = denser twinkling</b>, brighter = higher. During the change map two voices answer each other, a
+      <b>perfect fifth apart</b>: the upper, bright voice is <b>new light</b>, the lower, darker voice is <b>light lost</b>.
+      Their loudness is the share of purple vs orange pixels, so growth and loss can be heard side by side.</p>`,
+    legend: { lo: "lights out", mid: "no change", hi: "new lights" },
+  },
+};
+
+// SST colorbar → hue lookup table (built by tools/extract_lut.py from sst_ecco2_cbar.png)
+let SST_LUT = null;               // [{t, value, hue}]
+const HUE2T = new Float32Array(360); // hue (deg) → normalized value t in [0,1], NaN if not on the colorbar
+async function loadLUT() {
+  SST_LUT = (await (await fetch("media/web/sst_lut.json")).json()).lut;
+  for (let h = 0; h < 360; h++) {
+    let best = 1e9, bt = NaN;
+    for (const e of SST_LUT) {
+      const d = Math.min(Math.abs(h - e.hue), 360 - Math.abs(h - e.hue));
+      if (d < best) { best = d; bt = e.t; }
+    }
+    HUE2T[h] = best <= 12 ? bt : NaN;
+  }
+}
+
+// ---------------------------------------------------------------- dom
+const $ = (id) => document.getElementById(id);
+const video = $("video"), overlay = $("overlay"), stage = $("stage"), statusEl = $("status");
+const work = document.createElement("canvas");
+const wctx = work.getContext("2d", { willReadFrequently: true });
+
+let current = "sst";
+let playing = false;
+let probe = null;               // {x,y} normalized, or null
+let musical = true;
+
+function rgb2hsv(r, g, b) {
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  let h = 0;
+  if (d > 0) {
+    if (mx === r) h = ((g - b) / d) % 6; else if (mx === g) h = (b - r) / d + 2; else h = (r - g) / d + 4;
+    h *= 60; if (h < 0) h += 360;
+  }
+  return [h, mx === 0 ? 0 : d / mx, mx / 255];
+}
+
+// ---------------------------------------------------------------- analysis
+// Produces per-pixel classification for the current frame.
+const frame = { W: 0, H: 0, t: null, cls: null, bright: null, phase: "series" };
+function analyze() {
+  const [W, H] = DATASETS[current].grid;
+  if (work.width !== W) { work.width = W; work.height = H; }
+  if (video.readyState < 2) return false;
+  wctx.drawImage(video, 0, 0, W, H);
+  const px = wctx.getImageData(0, 0, W, H).data;
+  if (!frame.t || frame.t.length !== W * H) {
+    frame.t = new Float32Array(W * H); frame.cls = new Uint8Array(W * H); frame.bright = new Float32Array(W * H); frame.sat = new Float32Array(W * H);
+  }
+  frame.W = W; frame.H = H;
+  if (current === "sst") {
+    for (let i = 0, p = 0; i < W * H; i++, p += 4) {
+      const [h, s, v] = rgb2hsv(px[p], px[p + 1], px[p + 2]);
+      frame.t[i] = (s > 0.35 && v > 0.12) ? HUE2T[Math.floor(h) % 360] : NaN;
+    }
+  } else {
+    let purple = 0;
+    for (let y = 0, i = 0; y < H; y++) for (let x = 0; x < W; x++, i++) {
+      const p = i * 4;
+      const nx = x / W, ny = y / H;
+      // mask the centered year label and on-screen colorbar
+      if (nx > 0.46 && nx < 0.6 && ((ny > 0.44 && ny < 0.58) || (ny > 0.72 && ny < 0.84))) { frame.cls[i] = 0; continue; }
+      const [h, s, v] = rgb2hsv(px[p], px[p + 1], px[p + 2]);
+      let c = 0;
+      if (v > 0.2 && s > 0.12) {
+        if (h > 230 && h < 310) { c = 2; purple++; }       // new light
+        else if (h > 5 && h < 70) c = s > 0.45 ? 3 : 1;   // 3 = saturated orange (lights out), 1 = warm city light
+      } else if (v > 0.55) c = 1;                         // near-white lights
+      frame.cls[i] = c; frame.bright[i] = v; frame.sat[i] = s;
+    }
+    frame.phase = purple > 15 ? "change" : "series";
+    // in the change map, warm pixels are the orange "lights out" end of the diverging colorbar
+    if (frame.phase === "change") for (let i = 0; i < W * H; i++) if (frame.cls[i] === 1) frame.cls[i] = frame.sat[i] > 0.3 ? 3 : (frame.bright[i] < 0.5 ? 0 : 1);
+  }
+  return true;
+}
+
+function columnStats(col) {
+  const { W, H } = frame;
+  if (current === "sst") {
+    let sum = 0, n = 0, lo = 1, hi = 0;
+    for (let y = 0; y < H; y++) { const t = frame.t[y * W + col]; if (t === t) { sum += t; n++; if (t < lo) lo = t; if (t > hi) hi = t; } }
+    return { mean: n ? sum / n : NaN, cover: n / H, lo, hi };
+  }
+  let gain = 0, loss = 0, lit = 0, b = 0;
+  for (let y = 0; y < H; y++) {
+    const c = frame.cls[y * W + col];
+    if (c === 2) gain++; else if (c === 3) loss++; else if (c === 1) { lit++; b += frame.bright[y * W + col]; }
+  }
+  return { gain: gain / H, loss: loss / H, lit: lit / H, litN: lit, bright: lit ? b / lit : 0 };
+}
+
+function globalStats() {
+  const { W, H } = frame; const n = W * H;
+  if (current === "sst") {
+    let sum = 0, c = 0, warm = 0, hiv = -1, hix = 0, hiy = 0;
+    const lat = new Float32Array(3), latn = new Float32Array(3);
+    for (let i = 0; i < n; i++) { const t = frame.t[i]; if (t === t) { sum += t; c++; if (t > 28 / 32) warm++; const y = Math.floor(i / W); const band = y < H / 3 ? 0 : y < 2 * H / 3 ? 1 : 2; lat[band] += t; latn[band]++; } }
+    return { mean: c ? sum / c : NaN, warmShare: c ? warm / c : 0, bands: [0, 1, 2].map(k => latn[k] ? lat[k] / latn[k] : NaN) };
+  }
+  let gain = 0, loss = 0, lit = 0;
+  for (let i = 0; i < n; i++) { const c = frame.cls[i]; if (c === 2) gain++; else if (c === 3) loss++; else if (c === 1) lit++; }
+  return { gain, loss, lit, phase: frame.phase };
+}
+
+// ---------------------------------------------------------------- audio
+let ac = null, master, dry, wet, voices = {};
+const PENTA = [0, 3, 5, 7, 10];           // minor pentatonic — contains the perfect fifth
+function pitch(t, lo = 45, span = 36) {   // t in [0,1] → Hz. A2 .. A5
+  let m = lo + Math.max(0, Math.min(1, t)) * span;
+  if (musical) {
+    const rel = m - lo, oct = Math.floor(rel / 12), w = rel - oct * 12;
+    let best = 0; for (const s of [...PENTA, 12]) if (Math.abs(s - w) < Math.abs(best - w)) best = s;
+    m = lo + oct * 12 + best;
+  }
+  return 440 * Math.pow(2, (m - 69) / 12);
+}
+
+function makeReverb(ctx, sec = 2.4) {
+  const len = ctx.sampleRate * sec, buf = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) { const d = buf.getChannelData(ch); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3); }
+  const c = ctx.createConvolver(); c.buffer = buf; return c;
+}
+
+class Dyad {  // root + perfect fifth, filtered, panned
+  constructor(ctx, { type = "triangle", fifth = 0.45, cutoff = 2200, out }) {
+    this.ctx = ctx;
+    this.o1 = ctx.createOscillator(); this.o2 = ctx.createOscillator(); this.o1.type = this.o2.type = type;
+    this.g1 = ctx.createGain(); this.g2 = ctx.createGain(); this.g2.gain.value = fifth;
+    this.f = ctx.createBiquadFilter(); this.f.type = "lowpass"; this.f.frequency.value = cutoff;
+    this.amp = ctx.createGain(); this.amp.gain.value = 0;
+    this.pan = ctx.createStereoPanner();
+    this.o1.connect(this.g1).connect(this.f); this.o2.connect(this.g2).connect(this.f);
+    this.f.connect(this.amp).connect(this.pan).connect(out);
+    this.o1.start(); this.o2.start();
+  }
+  set(freq, gain, pan = 0, glide = 0.06) {
+    const t = this.ctx.currentTime;
+    if (freq > 0) { this.o1.frequency.setTargetAtTime(freq, t, glide); this.o2.frequency.setTargetAtTime(freq * 1.5, t, glide); }
+    this.amp.gain.setTargetAtTime(gain, t, 0.05);
+    this.pan.pan.setTargetAtTime(Math.max(-1, Math.min(1, pan)), t, 0.05);
+  }
+}
+
+function initAudio() {
+  if (ac) return;
+  ac = new (window.AudioContext || window.webkitAudioContext)();
+  master = ac.createGain(); master.gain.value = +$("vol").value;
+  const comp = ac.createDynamicsCompressor();
+  master.connect(comp).connect(ac.destination);
+  dry = ac.createGain(); dry.connect(master);
+  const rev = makeReverb(ac); wet = ac.createGain(); wet.gain.value = 0.35; wet.connect(rev).connect(master);
+  const bus = ac.createGain(); bus.connect(dry); bus.connect(wet);
+  voices.scan  = new Dyad(ac, { type: "triangle", fifth: 0.45, cutoff: 2600, out: bus });
+  voices.drone = new Dyad(ac, { type: "sine", fifth: 0.3, cutoff: 600, out: bus });
+  voices.probe = new Dyad(ac, { type: "sine", fifth: 0.35, cutoff: 3000, out: bus });
+  voices.gain  = new Dyad(ac, { type: "triangle", fifth: 0.0, cutoff: 3200, out: bus });   // new light (upper)
+  voices.loss  = new Dyad(ac, { type: "sawtooth", fifth: 0.0, cutoff: 900, out: bus });    // lights out (lower)
+  voices.bus = bus;
+}
+
+function bell(freq, pan, vol) {
+  const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain(), p = ac.createStereoPanner();
+  o.type = "sine"; o.frequency.value = freq; p.pan.value = pan;
+  g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.006); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
+  o.connect(g).connect(p).connect(voices.bus); o.start(t); o.stop(t + 1);
+}
+
+function silenceAll() { if (!ac) return; for (const k of ["scan", "drone", "probe", "gain", "loss"]) voices[k].set(0, 0); }
+
+// ---------------------------------------------------------------- speech / status
+let lastSpoken = 0;
+function say(text, { speak = true, force = false } = {}) {
+  statusEl.textContent = text;
+  if (!speak || !$("speak").checked || !("speechSynthesis" in window)) return;
+  const now = performance.now();
+  if (!force && now - lastSpoken < 900) return;
+  lastSpoken = now;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text); u.rate = 1.05; speechSynthesis.speak(u);
+}
+
+const fmtT = (t) => (t * 32).toFixed(1) + " °C";
+function lonOf(nx) { if (current === "lights") nx = (nx * 2) % 1; return -180 + 360 * nx; }
+function latOf(ny) { return 90 - 180 * ny; }
+const fmtLon = (l) => Math.abs(l).toFixed(0) + "°" + (l < 0 ? "W" : "E");
+const fmtLat = (l) => Math.abs(l).toFixed(0) + "°" + (l < 0 ? "S" : "N");
+const BAND = ["northern latitudes", "tropics", "southern latitudes"];
+
+function describe() {
+  if (!analyze()) { say("The video is still loading.", { force: true }); return; }
+  const g = globalStats();
+  if (current === "sst") {
+    const date = sstDate();
+    const warmest = g.bands.indexOf(Math.max(...g.bands.filter(x => x === x)));
+    say(`${date}. Average ocean surface ${fmtT(g.mean)}. Northern band ${fmtT(g.bands[0])}, tropics ${fmtT(g.bands[1])}, southern band ${fmtT(g.bands[2])}. ` +
+        `${Math.round(g.warmShare * 100)} percent of visible ocean is above 28 degrees. Warmest band: ${BAND[warmest]}.`, { force: true });
+  } else if (g.phase === "change") {
+    const tot = g.gain + g.loss || 1;
+    say(`Change map 2012 to 2023. ${Math.round(100 * g.gain / tot)} percent of changed pixels show new lights, ${Math.round(100 * g.loss / tot)} percent show lights going out.`, { force: true });
+  } else {
+    say(`Yearly night lights map. About ${g.lit} lit cells visible at this resolution.`, { force: true });
+  }
+}
+
+// SVS 3912: time range 2007-03-25 → 2008-03-03 across the animation (approximate mapping to video time)
+function sstDate() {
+  if (!video.duration) return "";
+  const t0 = Date.UTC(2007, 2, 25), t1 = Date.UTC(2008, 2, 3);
+  const d = new Date(t0 + (t1 - t0) * (video.currentTime / video.duration));
+  return "Approximately " + d.toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+}
+
+// ---------------------------------------------------------------- legend
+function drawLegend(marker = null) {
+  const c = $("legendCanvas"), x = c.getContext("2d"), W = c.width, H = c.height;
+  const grad = x.createLinearGradient(0, 0, W, 0);
+  if (current === "sst") SST_LUT && SST_LUT.forEach(e => grad.addColorStop(e.t, `rgb(${e.rgb})`));
+  else { grad.addColorStop(0, "#ff9a3c"); grad.addColorStop(0.5, "#ffffff"); grad.addColorStop(1, "#9b6cff"); }
+  x.fillStyle = grad; x.fillRect(0, 0, W, H);
+  if (marker !== null) { x.fillStyle = "#000"; x.fillRect(marker * W - 2, 0, 4, H); x.strokeStyle = "#fff"; x.strokeRect(marker * W - 3, 0, 6, H); }
+  const L = DATASETS[current].legend; $("legLo").textContent = L.lo; $("legMid").textContent = L.mid; $("legHi").textContent = L.hi;
+}
+
+let legendPlaying = false;
+async function audioLegend() {
+  initAudio(); await ac.resume();
+  if (legendPlaying) return;
+  legendPlaying = true; const wasPlaying = playing; if (playing) togglePlay();
+  silenceAll();
+  if (current === "sst") {
+    say("Audio legend. Low pitch is 0 degrees, cold, blue. Rising to high pitch, 32 degrees, warm, red.", { force: true });
+    await wait(4200);
+    const dur = 4000, start = performance.now();
+    await new Promise(res => {
+      (function step() {
+        const k = Math.min(1, (performance.now() - start) / dur);
+        voices.scan.set(pitch(k), 0.35, k * 2 - 1); drawLegend(k);
+        if (k < 1) requestAnimationFrame(step); else res();
+      })();
+    });
+  } else {
+    say("Audio legend. This lower, darker voice means lights went out.", { force: true });
+    await wait(2600); voices.loss.set(pitch(0.25), 0.25, -0.5); drawLegend(0.05); await wait(2200); voices.loss.set(0, 0);
+    say("This upper, brighter voice, a perfect fifth higher, means new lights.", { force: true });
+    await wait(2800); voices.gain.set(pitch(0.25) * 1.5, 0.3, 0.5); drawLegend(0.95); await wait(2200);
+    say("Together, they show growth and loss at the same longitude. Twinkling bells mark city lights in the yearly maps.", { force: true });
+    voices.loss.set(pitch(0.25), 0.22, -0.5); await wait(2500); voices.gain.set(0, 0); voices.loss.set(0, 0);
+    for (let i = 0; i < 8; i++) { bell(pitch(0.6 + Math.random() * 0.4), Math.random() * 2 - 1, 0.18); await wait(160); }
+    await wait(1200);
+  }
+  silenceAll(); drawLegend(); legendPlaying = false;
+  say("Legend done. Press Space to play.", { speak: false });
+  if (wasPlaying) togglePlay();
+}
+const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+// ---------------------------------------------------------------- main loop
+let sweepStart = 0, lastAnalyze = 0, lastCol = -1, lastSweepIdx = -1;
+function sweepSec() { return +$("sweep").value; }
+
+function loop(ts) {
+  requestAnimationFrame(loop);
+  drawOverlay();
+  if (!playing || !ac) return;
+  if (ts - lastAnalyze > 60) { if (analyze()) lastAnalyze = ts; else return; }
+  const el = (ac.currentTime - sweepStart) / sweepSec();
+  const nx = el % 1, sweepIdx = Math.floor(el);
+  const col = Math.min(frame.W - 1, Math.floor(nx * frame.W));
+  const pan = nx * 2 - 1;
+  const g = globalStats();
+
+  if (current === "sst") {
+    const s = columnStats(col);
+    voices.scan.set(s.mean === s.mean ? pitch(s.mean) : 0, s.mean === s.mean ? 0.08 + 0.32 * Math.sqrt(s.cover) : 0, pan);
+    voices.drone.set(g.mean === g.mean ? pitch(g.mean, 33, 24) : 0, 0.12, 0, 0.8);
+    meters([["Under scan line", s.mean === s.mean ? fmtT(s.mean) : "land", s.mean], ["Ocean in column", Math.round(s.cover * 100) + "%", s.cover], ["Global mean", fmtT(g.mean), g.mean]]);
+    if (sweepIdx !== lastSweepIdx && lastSweepIdx >= 0) say(`${sstDate()}. Global mean ${fmtT(g.mean)}.`, { speak: false });
+  } else {
+    const s = columnStats(col);
+    if (frame.phase === "change") {
+      const base = pitch(0.25);
+      voices.gain.set(base * 1.5 * (1 + 0.0 * s.gain), Math.min(0.5, Math.sqrt(s.gain) * 1.6), pan);
+      voices.loss.set(base, Math.min(0.45, Math.sqrt(s.loss) * 1.6), pan);
+      voices.drone.set(pitch(0.0, 33, 24), 0.06, 0, 0.8);
+    } else {
+      voices.gain.set(0, 0); voices.loss.set(0, 0);
+      voices.drone.set(pitch(0.0, 33, 24), 0.05, 0, 0.8);
+      if (col !== lastCol) {
+        // bells: probability grows with number of lit cells in this column
+        const n = Math.min(3, Math.round(s.litN / 2 + (Math.random() < (s.litN % 2) / 2 ? 1 : 0)));
+        for (let i = 0; i < n; i++) bell(pitch(0.45 + 0.55 * Math.min(1, s.bright * 1.4) + Math.random() * 0.1), pan, 0.06 + 0.06 * Math.min(1, s.bright));
+      }
+    }
+    meters([["Phase", frame.phase === "change" ? "change 2012→2023" : "yearly lights", frame.phase === "change" ? 1 : 0.3],
+            ["New light (column)", (s.gain * 100).toFixed(1) + "%", Math.min(1, s.gain * 8)],
+            ["Lights out (column)", (s.loss * 100).toFixed(1) + "%", Math.min(1, s.loss * 8)],
+            ["City lights (column)", s.litN, Math.min(1, s.litN / 10)]]);
+    if (sweepIdx !== lastSweepIdx && lastSweepIdx >= 0)
+      say(frame.phase === "change" ? `Change map: ${g.gain} new-light cells, ${g.loss} lights-out cells.` : `Yearly lights: ${g.lit} lit cells.`, { speak: false });
+  }
+  lastCol = col; lastSweepIdx = sweepIdx;
+
+  // probe
+  if (probe) {
+    const px = Math.min(frame.W - 1, Math.floor(probe.x * frame.W)), py = Math.min(frame.H - 1, Math.floor(probe.y * frame.H));
+    if (current === "sst") { const t = frame.t[py * frame.W + px]; voices.probe.set(t === t ? pitch(t) : 0, t === t ? 0.3 : 0, probe.x * 2 - 1); }
+    else { const c = frame.cls[py * frame.W + px]; voices.probe.set(c === 2 ? pitch(0.25) * 1.5 : c === 3 ? pitch(0.25) : c === 1 ? pitch(0.8) : 0, c ? 0.3 : 0, probe.x * 2 - 1); }
+  } else voices.probe.set(0, 0);
+}
+
+function meters(rows) {
+  const m = $("meters");
+  m.innerHTML = rows.map(([k, v, f]) => `<span>${k}</span><span class="bar"><i style="width:${Math.round(100 * Math.max(0, Math.min(1, f || 0)))}%"></i></span><span>${v}</span>`).join("");
+}
+
+function drawOverlay() {
+  const r = stage.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.round(r.width * dpr), h = Math.round(overlay.getBoundingClientRect().height * dpr);
+  if (overlay.width !== w || overlay.height !== h) { overlay.width = w; overlay.height = h; }
+  const x = overlay.getContext("2d"); x.clearRect(0, 0, w, h);
+  if (playing && ac) {
+    const nx = ((ac.currentTime - sweepStart) / sweepSec()) % 1;
+    const grd = x.createLinearGradient(nx * w - 30 * dpr, 0, nx * w, 0);
+    grd.addColorStop(0, "rgba(255,181,71,0)"); grd.addColorStop(1, "rgba(255,181,71,0.35)");
+    x.fillStyle = grd; x.fillRect(nx * w - 30 * dpr, 0, 30 * dpr, h);
+    x.fillStyle = "rgba(255,220,150,0.95)"; x.fillRect(nx * w - 1 * dpr, 0, 2 * dpr, h);
+  }
+  if (probe) {
+    const cx = probe.x * w, cy = probe.y * h;
+    x.strokeStyle = "#7cc4ff"; x.lineWidth = 2 * dpr;
+    x.beginPath(); x.arc(cx, cy, 10 * dpr, 0, Math.PI * 2); x.moveTo(cx - 18 * dpr, cy); x.lineTo(cx + 18 * dpr, cy); x.moveTo(cx, cy - 18 * dpr); x.lineTo(cx, cy + 18 * dpr); x.stroke();
+  }
+}
+
+// ---------------------------------------------------------------- interaction
+async function togglePlay() {
+  initAudio(); await ac.resume();
+  playing = !playing;
+  if (playing) { sweepStart = ac.currentTime; lastSweepIdx = -1; await video.play().catch(() => {}); $("play").textContent = "⏸ Pause"; say(`Playing ${DATASETS[current].title}.`); }
+  else { video.pause(); silenceAll(); $("play").textContent = "▶ Play"; say("Paused.", { speak: false }); }
+}
+
+function selectDataset(id) {
+  if (!DATASETS[id]) return;
+  current = id;
+  document.querySelectorAll("[data-ds]").forEach(b => { const on = b.dataset.ds === id; b.setAttribute("aria-pressed", on); b.setAttribute("aria-checked", on); });
+  $("dsDesc").innerHTML = DATASETS[id].desc;
+  video.src = DATASETS[id].video; video.load();
+  frame.t = null; probe = null; silenceAll(); drawLegend(); $("meters").innerHTML = "";
+  if (playing) video.play().catch(() => {});
+  say(`${DATASETS[id].title} selected. Press L for the audio legend, Space to play.`);
+}
+
+function moveProbe(dx, dy) {
+  if (!probe) probe = { x: 0.5, y: 0.5 };
+  probe.x = Math.max(0, Math.min(0.999, probe.x + dx)); probe.y = Math.max(0, Math.min(0.999, probe.y + dy));
+  announceProbe();
+}
+let probeTimer = null;
+function announceProbe() {
+  clearTimeout(probeTimer);
+  probeTimer = setTimeout(() => {
+    if (!probe || !analyze()) return;
+    const px = Math.floor(probe.x * frame.W), py = Math.floor(probe.y * frame.H), i = py * frame.W + px;
+    const where = `${fmtLat(latOf(probe.y))}, ${fmtLon(lonOf(probe.x))}`;
+    if (current === "sst") { const t = frame.t[i]; say(`${where}: ${t === t ? fmtT(t) : "land or no data"}`); }
+    else { const c = frame.cls[i]; say(`${where}: ${["dark", "city lights", "new lights", "lights out"][c]}`); }
+  }, 250);
+}
+
+document.querySelectorAll("[data-ds]").forEach(b => b.addEventListener("click", () => selectDataset(b.dataset.ds)));
+$("play").addEventListener("click", togglePlay);
+$("legendBtn").addEventListener("click", audioLegend);
+$("describe").addEventListener("click", describe);
+$("modeBtn").addEventListener("click", () => { musical = !musical; $("modeBtn").setAttribute("aria-pressed", musical); $("modeBtn").textContent = musical ? "🎵 Musical scale" : "📈 Raw pitch"; say(musical ? "Musical scale: values snap to a pentatonic scale." : "Raw pitch: continuous, exact mapping."); });
+$("sweep").addEventListener("input", (e) => { $("sweepVal").textContent = e.target.value + " s"; if (ac) sweepStart = ac.currentTime; });
+$("vol").addEventListener("input", (e) => { if (master) master.gain.value = +e.target.value; });
+
+stage.addEventListener("mousemove", (e) => { const r = stage.getBoundingClientRect(); probe = { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height }; announceProbe(); });
+stage.addEventListener("mouseleave", () => { probe = null; });
+
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" && e.target.type === "range") return;
+  const step = e.shiftKey ? 0.05 : 0.01;
+  switch (e.key) {
+    case " ": if (e.target.tagName !== "BUTTON") { e.preventDefault(); togglePlay(); } break;
+    case "ArrowLeft": e.preventDefault(); moveProbe(-step, 0); break;
+    case "ArrowRight": e.preventDefault(); moveProbe(step, 0); break;
+    case "ArrowUp": e.preventDefault(); moveProbe(0, -step); break;
+    case "ArrowDown": e.preventDefault(); moveProbe(0, step); break;
+    case "Escape": probe = null; say("Probe released.", { speak: false }); break;
+    case "l": case "L": audioLegend(); break;
+    case "d": case "D": describe(); break;
+    case "m": case "M": $("modeBtn").click(); break;
+    case "1": selectDataset("sst"); break;
+    case "2": selectDataset("lights"); break;
+  }
+});
+
+(async function boot() {
+  await loadLUT();
+  selectDataset("sst");
+  statusEl.textContent = "Press Space (or ▶ Play) to start listening. Press L first to hear the audio legend.";
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
