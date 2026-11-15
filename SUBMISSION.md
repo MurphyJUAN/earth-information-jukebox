@@ -9,11 +9,12 @@ Earth Information Jukebox
 Earth Information Jukebox turns NASA Earth Information Center visualizations into live sound that a blind listener
 can follow and a sighted listener can enjoy. It doesn't map raw colors to notes. Instead it **reads each visualization's own colorbar
 backwards**: every pixel's color is turned back into the physical value it encodes (e.g. 27 °C, or "new lights since 2012"),
-and that value is played as pitch. A scan line sweeps the map from west to east in stereo. Each tone is a root plus a
-perfect fifth, so the sound stays musical. Continents fall silent, warm tropics sing high, and for night lights
-growth and loss answer each other as the two notes of one fifth. Everything runs in real time in the browser, is fully keyboard
-operable, starts with an **audio legend** (the colorbar played as sound), and can describe any frame or any probed
-location aloud.
+and that value is played as pitch. The colorbar itself becomes a quiet **octave played by woodwinds**, a constant pitch
+reference just as the colorbar stays on screen. The data moves inside that octave as one instrument: a **cello** for flowing
+ocean currents (sweeping north → south, or west → east within a latitude band), landing on dominant-seventh chord tones so it
+never clashes, and a **harp** for night lights, plucking the high D where new lights appeared and the low D where lights went out.
+Everything runs in real time in the browser, is fully keyboard operable, starts with an **audio legend**, and gives a text
+readout of any probed location for screen-reader users.
 
 ## Demo (must be ≤ 30 s video or ≤ 7 slides, English, hosted at a public link)
 `demo/jukebox_demo_30s.mp4`: a 30-second cut of a screen recording of the app's real Web Audio output, with English captions.
